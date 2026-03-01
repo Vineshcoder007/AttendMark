@@ -1,11 +1,38 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import "./App.css";
-import { createClient } from "@supabase/supabase-js";
+import { initializeApp } from "firebase/app";
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+} from "firebase/auth";
+import {
+  getFirestore,
+  collection,
+  getDocs,
+  addDoc,
+  deleteDoc,
+  doc,
+  query,
+  where,
+  orderBy,
+  setDoc,
+} from "firebase/firestore";
 
-// ── Replace with your Supabase project details ────────────────────────────────
-const SUPABASE_URL = "https://cwpvtqlbbrxchlenpyby.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_pCRaoFJrNogYKc7PmuUg6A_cbB9OY93";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// ── Replace with your Firebase project config ─────────────────────────────────
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_AUTH_DOMAIN",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_STORAGE_BUCKET",
+  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+  appId: "YOUR_APP_ID",
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
 
 const PERIODS = ["P-1", "P-2", "P-3", "P-4", "P-5", "P-6", "P-7", "P-8"];
 
@@ -16,22 +43,33 @@ function fmtDate(iso) {
   return `${d}/${m}/${y.slice(2)}`;
 }
 
+function smartSort(arr) {
+  return [...arr].sort((a, b) => {
+    const aNum = parseInt(a), bNum = parseInt(b);
+    const aIsNum = !isNaN(aNum) && String(aNum) === String(a);
+    const bIsNum = !isNaN(bNum) && String(bNum) === String(b);
+    if (aIsNum && bIsNum) return aNum - bNum;
+    if (aIsNum) return -1;
+    if (bIsNum) return 1;
+    return a.localeCompare(b);
+  });
+}
+
 // ── Root ─────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [session, setSession] = useState(null);
+  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
       setLoading(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
+    return unsub;
   }, []);
 
   if (loading) return <Splash />;
-  if (!session) return <Login />;
+  if (!user) return <Login />;
   return <Dashboard />;
 }
 
@@ -39,7 +77,7 @@ function Splash() {
   return <div className="splash"><span className="logo-mark">AM</span></div>;
 }
 
-// ── Login ────────────────────────────────────────────────────────────────────
+// ── Login ─────────────────────────────────────────────────────────────────────
 function Login() {
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
@@ -48,9 +86,12 @@ function Login() {
 
   async function signIn() {
     setBusy(true); setErr("");
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: pass });
-    if (error) { setErr(error.message); }
-    setBusy(false);
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), pass);
+    } catch (e) {
+      setErr("Wrong email or password.");
+      setBusy(false);
+    }
   }
 
   return (
@@ -75,23 +116,24 @@ function Login() {
   );
 }
 
-// ── Dashboard ────────────────────────────────────────────────────────────────
+// ── Dashboard ─────────────────────────────────────────────────────────────────
 function Dashboard() {
   const [tab, setTab] = useState("mark");
   return (
     <div className="shell">
       <header>
         <span className="logo">AttendMark</span>
-        <button className="btn-ghost sm" onClick={() => supabase.auth.signOut()}>Sign out</button>
+        <button className="btn-ghost sm" onClick={() => signOut(auth)}>Sign out</button>
       </header>
       <nav>
         {[["mark", "✏️  Mark"], ["history", "🗂  History"], ["students", "👥  Students"]].map(([v, l]) => (
-          <button key={v} className={`nav-btn ${tab === v ? "active" : ""}`} onClick={() => setTab(v)}>{l}</button>
+          <button key={v} className={`nav-btn ${tab === v ? "active" : ""}`}
+            onClick={() => setTab(v)}>{l}</button>
         ))}
       </nav>
       <main>
-        {tab === "mark" && <MarkTab />}
-        {tab === "history" && <HistoryTab />}
+        {tab === "mark"     && <MarkTab />}
+        {tab === "history"  && <HistoryTab />}
         {tab === "students" && <StudentsTab />}
       </main>
     </div>
@@ -100,7 +142,7 @@ function Dashboard() {
 
 // ── Mark Attendance ───────────────────────────────────────────────────────────
 function MarkTab() {
-  const [date, setDate] = useState(today());
+  const [date, setDate]     = useState(today());
   const [period, setPeriod] = useState("P-1");
   const [students, setStudents] = useState([]);
   const [absent, setAbsent] = useState(new Set());
@@ -108,20 +150,13 @@ function MarkTab() {
   const [output, setOutput] = useState("");
   const [copied, setCopied] = useState(false);
 
-  const loadStudents = useCallback(async () => {
-    const { data } = await supabase.from("students").select("number");
-    const sorted = (data || []).sort((a, b) => {
-      const aNum = parseInt(a.number), bNum = parseInt(b.number);
-      const aIsNum = !isNaN(aNum), bIsNum = !isNaN(bNum);
-      if (aIsNum && bIsNum) return aNum - bNum;
-      if (aIsNum) return -1;
-      if (bIsNum) return 1;
-      return a.number.localeCompare(b.number);
-    });
-    setStudents(sorted);
-  }, []);
+  useEffect(() => { loadStudents(); }, []);
 
-  useEffect(() => { loadStudents(); }, [loadStudents]);
+  async function loadStudents() {
+    const snap = await getDocs(collection(db, "students"));
+    const nums = snap.docs.map(d => d.id);
+    setStudents(smartSort(nums));
+  }
 
   function toggle(num) {
     setAbsent(prev => {
@@ -137,21 +172,29 @@ function MarkTab() {
   async function save() {
     if (!students.length) { alert("Add students first in the Students tab."); return; }
     setStatus("saving");
-    await supabase.from("attendance").delete().eq("date", date).eq("period", period);
+
+    // Delete existing records for this date + period
+    const q = query(
+      collection(db, "attendance"),
+      where("date", "==", date),
+      where("period", "==", period)
+    );
+    const existing = await getDocs(q);
+    await Promise.all(existing.docs.map(d => deleteDoc(doc(db, "attendance", d.id))));
+
+    // Insert new absent records
     if (absent.size > 0) {
-      const { error } = await supabase.from("attendance")
-        .insert([...absent].map(n => ({ date, period, student_number: n })));
-      if (error) { alert("Save failed: " + error.message); setStatus("idle"); return; }
+      await Promise.all([...absent].map(num =>
+        addDoc(collection(db, "attendance"), {
+          date,
+          period,
+          student_number: num,
+          created_at: new Date().toISOString(),
+        })
+      ));
     }
-    const list = [...absent].sort((a, b) => {
-      const aNum = parseInt(a), bNum = parseInt(b);
-      const aIsNum = !isNaN(aNum) && String(aNum) === String(a);
-      const bIsNum = !isNaN(bNum) && String(bNum) === String(b);
-      if (aIsNum && bIsNum) return aNum - bNum;
-      if (aIsNum) return -1;
-      if (bIsNum) return 1;
-      return a.localeCompare(b);
-    }).join(", ");
+
+    const list = smartSort([...absent]).join(", ");
     setOutput(`${fmtDate(date)}    ${period}\n${list || "No absences"}`);
     setStatus("saved");
   }
@@ -183,12 +226,12 @@ function MarkTab() {
         </h2>
         {!students.length
           ? <p className="empty">No students yet — add them in the Students tab.</p>
-          : students.map(s => (
-            <label key={s.number} className={`student-row ${absent.has(s.number) ? "absent" : ""}`}>
-              <span className="student-num">{s.number}</span>
+          : students.map(num => (
+            <label key={num} className={`student-row ${absent.has(num) ? "absent" : ""}`}>
+              <span className="student-num">{num}</span>
               <div className="row-right">
-                {absent.has(s.number) && <span className="absent-tag">Absent</span>}
-                <input type="checkbox" checked={absent.has(s.number)} onChange={() => toggle(s.number)} />
+                {absent.has(num) && <span className="absent-tag">Absent</span>}
+                <input type="checkbox" checked={absent.has(num)} onChange={() => toggle(num)} />
               </div>
             </label>
           ))
@@ -216,24 +259,24 @@ function MarkTab() {
 
 // ── History ───────────────────────────────────────────────────────────────────
 function HistoryTab() {
-  const [records, setRecords] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [filterDate, setFilterDate] = useState("");
+  const [records, setRecords]   = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [filterDate, setFilterDate]     = useState("");
   const [filterPeriod, setFilterPeriod] = useState("");
   const [copied, setCopied] = useState("");
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    let q = supabase.from("attendance").select("*")
-      .order("date", { ascending: false }).order("period");
-    if (filterDate) q = q.eq("date", filterDate);
-    if (filterPeriod) q = q.eq("period", filterPeriod);
-    const { data } = await q;
-    setRecords(data || []);
-    setLoading(false);
-  }, [filterDate, filterPeriod]);
+  useEffect(() => { load(); }, []);
 
-  useEffect(() => { load(); }, [load]);
+  async function load() {
+    setLoading(true);
+    let q = query(collection(db, "attendance"), orderBy("date", "desc"), orderBy("period"));
+    const snap = await getDocs(q);
+    let all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (filterDate)   all = all.filter(r => r.date === filterDate);
+    if (filterPeriod) all = all.filter(r => r.period === filterPeriod);
+    setRecords(all);
+    setLoading(false);
+  }
 
   const grouped = Object.values(
     records.reduce((acc, r) => {
@@ -243,18 +286,6 @@ function HistoryTab() {
       return acc;
     }, {})
   );
-
-  function smartSort(arr) {
-    return [...arr].sort((a, b) => {
-      const aNum = parseInt(a), bNum = parseInt(b);
-      const aIsNum = !isNaN(aNum) && String(aNum) === String(a);
-      const bIsNum = !isNaN(bNum) && String(bNum) === String(b);
-      if (aIsNum && bIsNum) return aNum - bNum;
-      if (aIsNum) return -1;
-      if (bIsNum) return 1;
-      return a.localeCompare(b);
-    });
-  }
 
   async function copyEntry(g) {
     const list = smartSort(g.nums).join(", ");
@@ -283,8 +314,8 @@ function HistoryTab() {
       {loading
         ? <p className="empty">Loading…</p>
         : !grouped.length
-          ? <p className="empty">No records found.</p>
-          : grouped.map(g => {
+        ? <p className="empty">No records found.</p>
+        : grouped.map(g => {
             const key = `${g.date}${g.period}`;
             const list = smartSort(g.nums).join(", ");
             return (
@@ -308,42 +339,36 @@ function HistoryTab() {
 // ── Students ──────────────────────────────────────────────────────────────────
 function StudentsTab() {
   const [students, setStudents] = useState([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [input, setInput]       = useState("");
+  const [loading, setLoading]   = useState(true);
 
-  const load = useCallback(async () => {
+  useEffect(() => { load(); }, []);
+
+  async function load() {
     setLoading(true);
-    const { data } = await supabase.from("students").select("number");
-    const sorted = (data || []).sort((a, b) => {
-      const aNum = parseInt(a.number), bNum = parseInt(b.number);
-      const aIsNum = !isNaN(aNum), bIsNum = !isNaN(bNum);
-      if (aIsNum && bIsNum) return aNum - bNum;
-      if (aIsNum) return -1;
-      if (bIsNum) return 1;
-      return a.number.localeCompare(b.number);
-    });
-    setStudents(sorted);
+    const snap = await getDocs(collection(db, "students"));
+    const nums = snap.docs.map(d => d.id);
+    setStudents(smartSort(nums));
     setLoading(false);
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
+  }
 
   async function add() {
     const tokens = input.split(/[\s,]+/).map(n => n.trim()).filter(n => n.length > 0);
     if (!tokens.length) return;
-    await supabase.from("students").upsert(tokens.map(n => ({ number: String(n) })), { onConflict: "number" });
+    await Promise.all(tokens.map(n => setDoc(doc(db, "students", n), { number: n })));
     setInput(""); load();
   }
 
   async function remove(num) {
     if (!confirm(`Remove student #${num}?`)) return;
-    await supabase.from("students").delete().eq("number", num);
+    await deleteDoc(doc(db, "students", num));
     load();
   }
 
   async function removeAll() {
     if (!confirm("Remove ALL students? This cannot be undone.")) return;
-    await supabase.from("students").delete().not("number", "is", null);
+    const snap = await getDocs(collection(db, "students"));
+    await Promise.all(snap.docs.map(d => deleteDoc(doc(db, "students", d.id))));
     load();
   }
 
@@ -352,7 +377,7 @@ function StudentsTab() {
       <section className="card">
         <h2>Add Students</h2>
         <p className="hint">Enter numbers separated by commas or spaces</p>
-        <textarea rows={3} placeholder="e.g.  1, 2, 3, 45, 67"
+        <textarea rows={3} placeholder="e.g.  1, 2, 3, 45, le01"
           value={input} onChange={e => setInput(e.target.value)} />
         <button className="btn-primary" onClick={add}>Add</button>
       </section>
@@ -365,11 +390,11 @@ function StudentsTab() {
         </h2>
         {loading ? <p className="empty">Loading…</p>
           : !students.length ? <p className="empty">No students yet.</p>
-            : <div className="chip-grid">
-              {students.map(s => (
-                <div key={s.number} className="chip">
-                  <span>{s.number}</span>
-                  <button onClick={() => remove(s.number)}>×</button>
+          : <div className="chip-grid">
+              {students.map(num => (
+                <div key={num} className="chip">
+                  <span>{num}</span>
+                  <button onClick={() => remove(num)}>×</button>
                 </div>
               ))}
             </div>
