@@ -22,13 +22,13 @@ import {
 
 // ── Replace with your Firebase project config ─────────────────────────────────
 const firebaseConfig = {
-  apiKey: "AIzaSyAv72mq3PRxCO-LWVVT9R0arzArgv5wQNk",
+  apiKey: "XXXXXXXX",
   authDomain: "attendmark-17229.firebaseapp.com",
   projectId: "attendmark-17229",
-  storageBucket: "attendmark-17229.firebasestorage.app",
-  messagingSenderId: "547555767179",
-  appId: "1:547555767179:web:0eb7ff8144e64a545fb58e",
-  measurementId: "G-F0GGR7S6PW"
+  storageBucket: "XXXXXXX",
+  messagingSenderId: "XXXXXXX",
+  appId: "XXXXXXXXXXX",
+  measurementId: "XXXXXXXXXX"
 };
 
 const app = initializeApp(firebaseConfig);
