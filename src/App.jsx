@@ -13,20 +13,17 @@ import {
   getDocs,
   deleteDoc,
   doc,
-  query,
-  orderBy,
   setDoc,
 } from "firebase/firestore";
 
 // ── Replace with your Firebase project config ─────────────────────────────────
 const firebaseConfig = {
-  apiKey: "XXXXXXXXXXXXXXXXX",
-  authDomain: "XXXXXXXXXXXXXXXXX",
-  projectId: "XXXXXXXXXXXXXXXXX",
-  storageBucket: "XXXXXXXXXXXXXXXXX",
-  messagingSenderId: "XXXXXXXXXXXXXXXXX",
-  appId: "XXXXXXXXXXXXXXXXX",
-  measurementId: "XXXXXXXXXXXXXXXXX"
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_AUTH_DOMAIN",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_STORAGE_BUCKET",
+  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+  appId: "YOUR_APP_ID",
 };
 
 const app = initializeApp(firebaseConfig);
@@ -131,8 +128,8 @@ function Dashboard() {
         ))}
       </nav>
       <main>
-        {tab === "mark" && <MarkTab />}
-        {tab === "history" && <HistoryTab />}
+        {tab === "mark"     && <MarkTab />}
+        {tab === "history"  && <HistoryTab />}
         {tab === "students" && <StudentsTab />}
       </main>
     </div>
@@ -141,7 +138,7 @@ function Dashboard() {
 
 // ── Mark Attendance ───────────────────────────────────────────────────────────
 function MarkTab() {
-  const [date, setDate] = useState(today());
+  const [date, setDate]     = useState(today());
   const [period, setPeriod] = useState("P-1");
   const [students, setStudents] = useState([]);
   const [absent, setAbsent] = useState(new Set());
@@ -251,31 +248,45 @@ function MarkTab() {
 
 // ── History ───────────────────────────────────────────────────────────────────
 function HistoryTab() {
-  const [records, setRecords] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [filterDate, setFilterDate] = useState("");
+  const [record, setRecord]     = useState(null);   // single result
+  const [loading, setLoading]   = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [filterDate, setFilterDate]     = useState("");
   const [filterPeriod, setFilterPeriod] = useState("");
-  const [copied, setCopied] = useState("");
+  const [copied, setCopied] = useState(false);
 
-  useEffect(() => { load(); }, []);
-
-  async function load() {
+  async function search() {
+    if (!filterDate || !filterPeriod) {
+      alert("Please select both a date and a period to search.");
+      return;
+    }
     setLoading(true);
-    let q = query(collection(db, "attendance"), orderBy("date", "desc"), orderBy("period"));
-    const snap = await getDocs(q);
-    let all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    if (filterDate) all = all.filter(r => r.date === filterDate);
-    if (filterPeriod) all = all.filter(r => r.period === filterPeriod);
-    setRecords(all);
+    setSearched(false);
+    setRecord(null);
+    try {
+      // Document ID is always date_period e.g. 2026-03-04_P-1
+      const { getDoc } = await import("firebase/firestore");
+      const snap = await getDoc(doc(db, "attendance", `${filterDate}_${filterPeriod}`));
+      if (snap.exists()) {
+        setRecord({ id: snap.id, ...snap.data() });
+      } else {
+        setRecord(null);
+      }
+    } catch(e) {
+      alert("Search failed: " + e.message);
+    }
+    setSearched(true);
     setLoading(false);
   }
 
-  // Each record now has an 'absent' array — no grouping needed
-  async function copyEntry(g) {
-    const list = smartSort(g.absent || []).join(", ");
-    await navigator.clipboard.writeText(`${fmtDate(g.date)}    ${g.period}\n${list || "No absences"}`);
-    setCopied(`${g.date}${g.period}`);
-    setTimeout(() => setCopied(""), 2000);
+  async function copy() {
+    if (!record) return;
+    const list = smartSort(record.absent || []).join(", ");
+    await navigator.clipboard.writeText(
+      `${fmtDate(record.date)}    ${record.period}\n${list || "No absences"}`
+    );
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   }
 
   return (
@@ -283,39 +294,34 @@ function HistoryTab() {
       <section className="card">
         <div className="control-row">
           <label>Date</label>
-          <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
+          <input type="date" value={filterDate} onChange={e => { setFilterDate(e.target.value); setSearched(false); setRecord(null); }} />
         </div>
         <div className="control-row">
           <label>Period</label>
-          <select value={filterPeriod} onChange={e => setFilterPeriod(e.target.value)}>
-            <option value="">All</option>
+          <select value={filterPeriod} onChange={e => { setFilterPeriod(e.target.value); setSearched(false); setRecord(null); }}>
+            <option value="">Select</option>
             {PERIODS.map(p => <option key={p}>{p}</option>)}
           </select>
         </div>
-        <button className="btn-secondary full" onClick={load}>Search</button>
+        <button className="btn-secondary full" onClick={search}>Search</button>
       </section>
 
-      {loading
-        ? <p className="empty">Loading…</p>
-        : !records.length
-          ? <p className="empty">No records found.</p>
-          : records.map(g => {
-            const key = `${g.date}${g.period}`;
-            const list = smartSort(g.absent || []).join(", ");
-            return (
-              <div key={key} className="card history-entry">
-                <div className="hist-top">
-                  <span className="hist-date">{fmtDate(g.date)}</span>
-                  <span className="badge">{g.period}</span>
-                  <button className="btn-ghost sm ml-auto" onClick={() => copyEntry(g)}>
-                    {copied === key ? "✓" : "Copy"}
-                  </button>
-                </div>
-                <pre className="hist-list">{list || "No absences"}</pre>
-              </div>
-            );
-          })
-      }
+      {loading && <p className="empty">Searching…</p>}
+
+      {!loading && searched && !record && (
+        <p className="empty">No attendance record found for this date and period.</p>
+      )}
+
+      {!loading && record && (() => {
+        const list = smartSort(record.absent || []).join(", ");
+        return (
+          <section className="card output-card">
+            <h2>Result</h2>
+            <pre className="output-box">{`${fmtDate(record.date)}    ${record.period}\n${list || "No absences"}`}</pre>
+            <button className="btn-copy" onClick={copy}>{copied ? "✓ Copied!" : "Copy"}</button>
+          </section>
+        );
+      })()}
     </div>
   );
 }
@@ -323,8 +329,8 @@ function HistoryTab() {
 // ── Students ──────────────────────────────────────────────────────────────────
 function StudentsTab() {
   const [students, setStudents] = useState([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [input, setInput]       = useState("");
+  const [loading, setLoading]   = useState(true);
 
   useEffect(() => { load(); }, []);
 
@@ -374,7 +380,7 @@ function StudentsTab() {
         </h2>
         {loading ? <p className="empty">Loading…</p>
           : !students.length ? <p className="empty">No students yet.</p>
-            : <div className="chip-grid">
+          : <div className="chip-grid">
               {students.map(num => (
                 <div key={num} className="chip">
                   <span>{num}</span>
